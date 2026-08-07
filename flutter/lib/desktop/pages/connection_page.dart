@@ -18,6 +18,7 @@ import '../../common.dart';
 import '../../common/formatter/id_formatter.dart';
 import '../../common/widgets/peer_tab_page.dart';
 import '../../common/widgets/autocomplete.dart';
+import '../../common/widgets/remote_vault.dart';
 import '../../models/platform_model.dart';
 import '../../desktop/widgets/material_mod_popup_menu.dart' as mod_menu;
 
@@ -523,6 +524,17 @@ class _ConnectionPageState extends State<ConnectionPage>
                       onConnect();
                     },
                     child: Text(translate("Connect")),
+                  ),
+                ),
+                const SizedBox(width: 6),
+                SizedBox(
+                  height: 28.0,
+                  child: OutlinedButton(
+                    onPressed: () => showRemoteVaultDialog(context),
+                    style: OutlinedButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(horizontal: 8),
+                    ),
+                    child: const Text('📡', style: TextStyle(fontSize: 14)),
                   ),
                 ),
                 const SizedBox(width: 8),
