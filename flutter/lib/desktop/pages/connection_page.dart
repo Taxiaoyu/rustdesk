@@ -534,7 +534,7 @@ class _ConnectionPageState extends State<ConnectionPage>
                     style: OutlinedButton.styleFrom(
                       padding: const EdgeInsets.symmetric(horizontal: 8),
                     ),
-                    child: const Text('📡', style: TextStyle(fontSize: 14)),
+                    child: const Text('📡'),
                   ),
                 ),
                 const SizedBox(width: 8),
