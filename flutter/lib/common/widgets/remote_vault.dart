@@ -155,7 +155,11 @@ class _RemoteVaultDialogState extends State<_RemoteVaultDialog> {
             ),
             child: const Center(child: Text('R')),
           ),
-          title: Text(entry.projectName),
+          title: Text(
+            entry.notes != null && entry.notes!.isNotEmpty
+                ? '${entry.projectName} — ${entry.notes}'
+                : entry.projectName,
+          ),
           subtitle: Text(entry.code),
           trailing: entry.password != null && entry.password!.isNotEmpty
               ? const Icon(Icons.vpn_key, size: 14, color: Colors.orange)
