@@ -1699,9 +1699,10 @@ jobs:
             res/rustdesk-${{ env.VERSION }}*.zst
 
   build-rustdesk-linux-sciter:
-    if: ${{ inputs.upload-artifact }}
+    # Legacy Sciter Linux builds are not part of the custom Flutter release.
+    # armv7 fails in the legacy container and x86_64 exceeds GitHub's 6-hour limit.
+    if: false
     runs-on: ${{ matrix.job.on }}
-    continue-on-error: ${{ matrix.job.arch == 'armv7' }}
     name: build-rustdesk-linux-sciter ${{ matrix.job.target }}
     strategy:
       fail-fast: false
@@ -1930,7 +1931,8 @@ jobs:
     name: Build appimage ${{ matrix.job.target }} (${{ matrix.edition }})
     needs: [build-rustdesk-linux]
     runs-on: ubuntu-22.04
-    if: ${{ inputs.upload-artifact }}
+    # DEB/RPM are the supported Linux artifacts for this custom release.
+    if: false
     strategy:
       fail-fast: false
       matrix:
@@ -1985,7 +1987,8 @@ jobs:
       - build-rustdesk-linux
       - build-rustdesk-linux-sciter
     runs-on: ${{ matrix.job.on }}
-    if: ${{ inputs.upload-artifact }}
+    # Disabled together with the legacy Sciter/AppImage derivative packaging.
+    if: false
     strategy:
       fail-fast: false
       matrix:
