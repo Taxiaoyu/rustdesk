@@ -15,6 +15,7 @@ import 'package:window_manager/window_manager.dart';
 import 'package:flutter_hbb/models/peer_model.dart';
 
 import '../../common.dart';
+import '../../common/build_config.dart';
 import '../../common/formatter/id_formatter.dart';
 import '../../common/widgets/peer_tab_page.dart';
 import '../../common/widgets/autocomplete.dart';
@@ -526,17 +527,19 @@ class _ConnectionPageState extends State<ConnectionPage>
                     child: Text(translate("Connect")),
                   ),
                 ),
-                const SizedBox(width: 6),
-                SizedBox(
-                  height: 28.0,
-                  child: OutlinedButton(
-                    onPressed: () => showRemoteVaultDialog(context),
-                    style: OutlinedButton.styleFrom(
-                      padding: const EdgeInsets.symmetric(horizontal: 8),
+                if (kIsAdminEdition) ...[
+                  const SizedBox(width: 6),
+                  SizedBox(
+                    height: 28.0,
+                    child: OutlinedButton(
+                      onPressed: () => showRemoteVaultDialog(context),
+                      style: OutlinedButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(horizontal: 8),
+                      ),
+                      child: const Text('📡'),
                     ),
-                    child: const Text('📡'),
                   ),
-                ),
+                ],
                 const SizedBox(width: 8),
                 Container(
                   height: 28.0,

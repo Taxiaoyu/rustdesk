@@ -33,6 +33,14 @@ use crate::{
 
 type Message = RendezvousMessage;
 
+fn should_relay_immediately(
+    force_relay: bool,
+    tcp_listen_disabled: bool,
+    udp_port: i32,
+) -> bool {
+    force_relay || (tcp_listen_disabled && udp_port <= 0)
+}
+
 fn connection_meta(
     control_permissions: Option<ControlPermissions>,
     controlled_context: Option<ControlledContext>,
@@ -667,12 +675,17 @@ impl RendezvousMediator {
                 start_ipv6(peer_addr_v6, peer_addr, server.clone(), meta.clone()).await;
         }
         let relay_server = self.get_relay_server(ph.relay_server);
-        // for ensure, websocket go relay directly
+        // Symmetric NAT can still succeed with hole punching on some networks. Try the
+        // existing short direct-connection timeout first, then let the client fall back
+        // to relay. WebSocket/forced relay still skips the direct attempt.
         if ph.nat_type.enum_value() == Ok(NatType::SYMMETRIC)
             || Config::get_nat_type() == NatType::SYMMETRIC as i32
-            || relay
-            || (config::is_disable_tcp_listen() && ph.udp_port <= 0)
         {
+            log::info!(
+                "Symmetric NAT detected, attempting direct connection before relay fallback"
+            );
+        }
+        if should_relay_immediately(relay, config::is_disable_tcp_listen(), ph.udp_port) {
             let uuid = Uuid::new_v4().to_string();
             return self
                 .create_relay(
@@ -831,6 +844,19 @@ impl RendezvousMediator {
             relay_server = crate::increase_port(&self.host, 1);
         }
         relay_server
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::should_relay_immediately;
+
+    #[test]
+    fn relay_policy_only_skips_direct_when_required() {
+        assert!(should_relay_immediately(true, false, 0));
+        assert!(should_relay_immediately(false, true, 0));
+        assert!(!should_relay_immediately(false, true, 1));
+        assert!(!should_relay_immediately(false, false, 0));
     }
 }
 

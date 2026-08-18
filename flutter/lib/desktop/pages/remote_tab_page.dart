@@ -21,6 +21,7 @@ import 'package:get/get.dart';
 import 'package:bot_toast/bot_toast.dart';
 
 import '../../common/widgets/dialog.dart';
+import '../../common/build_config.dart';
 import '../../models/platform_model.dart';
 
 class _MenuTheme {
@@ -187,6 +188,27 @@ class _ConnectionTabPageState extends State<ConnectionTabPage> {
                     height: themeConf.iconSize,
                   ).paddingOnly(right: 5),
                 ),
+                if (kIsAdminEdition)
+                  Container(
+                    key: ValueKey('connection-mode-$key'),
+                    margin: const EdgeInsets.only(right: 6),
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                    decoration: BoxDecoration(
+                      color: direct
+                          ? const Color(0xFF2E7D32)
+                          : const Color(0xFFEF6C00),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Text(
+                      direct ? 'P2P' : translate('Relay Connection'),
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 11,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ),
                 label,
                 unreadMessageCountBuilder(UnreadChatCountState.find(key))
                     .marginOnly(left: 4),

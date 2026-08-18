@@ -25,6 +25,16 @@ else:
     flutter_build_dir = 'build/linux/x64/release/bundle/'
 flutter_build_dir_2 = f'flutter/{flutter_build_dir}'
 skip_cargo = False
+ADMIN_REMOTE_VAULT_URL = 'http://rd.chuan-chuan.com:13002'
+
+
+def flutter_build_args(admin_edition):
+    if not admin_edition:
+        return ''
+    return (
+        ' --dart-define=RUSTDESK_ADMIN_EDITION=true'
+        f' --dart-define=RUSTDESK_REMOTE_VAULT_URL={ADMIN_REMOTE_VAULT_URL}'
+    )
 
 
 def get_deb_arch() -> str:
@@ -109,6 +119,8 @@ def make_parser():
              'Available: [Not used for now]. Special value is "ALL" and empty "". Default is empty.')
     parser.add_argument('--flutter', action='store_true',
                         help='Build flutter package', default=False)
+    parser.add_argument('--admin', action='store_true',
+                        help='Build the Flutter administrator edition', default=False)
     parser.add_argument(
         '--hwcodec',
         action='store_true',
@@ -316,12 +328,13 @@ def ffi_bindgen_function_refactor():
         'sed -i "s/ffi.NativeFunction<ffi.Bool Function(DartPort/ffi.NativeFunction<ffi.Uint8 Function(DartPort/g" flutter/lib/generated_bridge.dart')
 
 
-def build_flutter_deb(version, features):
+def build_flutter_deb(version, features, admin_edition):
     if not skip_cargo:
         system2(f'cargo build --locked --features {features} --lib --release')
         ffi_bindgen_function_refactor()
     os.chdir('flutter')
-    system2('flutter build linux --release')
+    system2(
+        f'flutter build linux --release{flutter_build_args(admin_edition)}')
     system2('mkdir -p tmpdeb/usr/bin/')
     system2('mkdir -p tmpdeb/usr/share/rustdesk')
     system2('mkdir -p tmpdeb/etc/rustdesk/')
@@ -402,7 +415,7 @@ def build_deb_from_folder(version, binary_folder):
     os.chdir("..")
 
 
-def build_flutter_dmg(version, features):
+def build_flutter_dmg(version, features, admin_edition):
     if not skip_cargo:
         # set minimum osx build target, now is 10.14, which is the same as the flutter xcode project
         system2(
@@ -416,7 +429,8 @@ def build_flutter_dmg(version, features):
     # FLUTTER_XCODE_* env vars are forwarded to xcodebuild as build settings.
     mac_arch = 'arm64' if platform.machine().lower() in ('arm64', 'aarch64') else 'x86_64'
     system2(
-        f'FLUTTER_XCODE_ARCHS={mac_arch} FLUTTER_XCODE_ONLY_ACTIVE_ARCH=YES flutter build macos --release')
+        f'FLUTTER_XCODE_ARCHS={mac_arch} FLUTTER_XCODE_ONLY_ACTIVE_ARCH=YES '
+        f'flutter build macos --release{flutter_build_args(admin_edition)}')
     system2('cp -rf ../target/release/service ./build/macos/Build/Products/Release/RustDesk.app/Contents/MacOS/')
     '''
     system2(
@@ -426,25 +440,27 @@ def build_flutter_dmg(version, features):
     os.chdir("..")
 
 
-def build_flutter_arch_manjaro(version, features):
+def build_flutter_arch_manjaro(version, features, admin_edition):
     if not skip_cargo:
         system2(f'cargo build --locked --features {features} --lib --release')
     ffi_bindgen_function_refactor()
     os.chdir('flutter')
-    system2('flutter build linux --release')
+    system2(
+        f'flutter build linux --release{flutter_build_args(admin_edition)}')
     system2(f'strip {flutter_build_dir}/lib/librustdesk.so')
     os.chdir('../res')
     system2('HBB=`pwd`/.. FLUTTER=1 makepkg -f')
 
 
-def build_flutter_windows(version, features, skip_portable_pack):
+def build_flutter_windows(version, features, skip_portable_pack, admin_edition):
     if not skip_cargo:
         system2(f'cargo build --locked --features {features} --lib --release')
         if not os.path.exists("target/release/librustdesk.dll"):
             print("cargo build failed, please check rust source code.")
             exit(-1)
     os.chdir('flutter')
-    system2('flutter build windows --release')
+    system2(
+        f'flutter build windows --release{flutter_build_args(admin_edition)}')
     os.chdir('..')
     shutil.copy2('target/release/deps/dylib_virtual_display.dll',
                  flutter_build_dir_2)
@@ -480,6 +496,8 @@ def main():
     version = get_version()
     features = ','.join(get_features(args))
     flutter = args.flutter
+    if args.admin and not flutter:
+        parser.error('--admin requires --flutter')
     if not flutter:
         system2('python3 res/inline-sciter.py')
     print(args.skip_cargo)
@@ -499,7 +517,8 @@ def main():
         os.chdir('../../..')
 
         if flutter:
-            build_flutter_windows(version, features, args.skip_portable_pack)
+            build_flutter_windows(
+                version, features, args.skip_portable_pack, args.admin)
             return
         system2('cargo build --locked --release --features ' + features)
         # system2('upx.exe target/release/rustdesk.exe')
@@ -524,7 +543,7 @@ def main():
         # pacman -S -needed base-devel
         system2("sed -i 's/pkgver=.*/pkgver=%s/g' res/PKGBUILD" % version)
         if flutter:
-            build_flutter_arch_manjaro(version, features)
+            build_flutter_arch_manjaro(version, features, args.admin)
         else:
             system2('cargo build --locked --release --features ' + features)
             system2('git checkout src/ui/common.tis')
@@ -557,12 +576,12 @@ def main():
     else:
         if flutter:
             if osx:
-                build_flutter_dmg(version, features)
+                build_flutter_dmg(version, features, args.admin)
                 pass
             else:
                 # system2(
                 #     'mv target/release/bundle/deb/rustdesk*.deb ./flutter/rustdesk.deb')
-                build_flutter_deb(version, features)
+                build_flutter_deb(version, features, args.admin)
         else:
             system2('cargo --locked bundle --release --features ' + features)
             if osx:

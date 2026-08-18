@@ -3,10 +3,12 @@ import 'package:flutter/material.dart';
 import 'package:flutter_hbb/common.dart';
 import 'package:http/http.dart' as http;
 
-/// RemoteVault 服务器地址
-const kRemoteVaultUrl = 'http://118.31.42.84:13002';
+import '../build_config.dart';
 
 Future<List<RemoteVaultEntry>> fetchRemoteVaultEntries() async {
+  if (!kIsAdminEdition || kRemoteVaultUrl.isEmpty) {
+    return [];
+  }
   try {
     final uri = Uri.parse('$kRemoteVaultUrl/api/codes?type=RustDesk');
     final response = await http.get(uri).timeout(const Duration(seconds: 5));
