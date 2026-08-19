@@ -529,7 +529,8 @@ jobs:
             ./SignOutput/rustdesk-*.exe
 
   build-rustdesk-ios:
-    if: ${{ inputs.upload-artifact }}
+    # This custom release is deployed to Windows endpoints only.
+    if: false
     name: build rustdesk ios ipa
     runs-on: ${{ matrix.job.os }}
     needs: [generate-bridge]
@@ -649,6 +650,8 @@ jobs:
 
 
   build-for-macOS:
+    # This custom release is deployed to Windows endpoints only.
+    if: false
     name: ${{ matrix.job.target }} (${{ matrix.edition }})
     runs-on: ${{ matrix.job.os }}
     needs: [generate-bridge]
@@ -898,6 +901,8 @@ jobs:
           files: rustdesk-${{ env.VERSION }}-unsigned.tar.gz
 
   build-rustdesk-android:
+    # This custom release is deployed to Windows endpoints only.
+    if: false
     needs: [generate-bridge]
     name: build rustdesk android apk ${{ matrix.job.target }}
     runs-on: ${{ matrix.job.os }}
@@ -1388,6 +1393,8 @@ jobs:
             signed-apk/rustdesk-${{ env.VERSION }}-universal${{ env.suffix }}.apk
 
   build-rustdesk-linux:
+    # This custom release is deployed to Windows endpoints only.
+    if: false
     needs: [generate-bridge]
     name: build rustdesk linux ${{ matrix.job.target }} (${{ matrix.edition }})
     runs-on: ${{ matrix.job.on }}
