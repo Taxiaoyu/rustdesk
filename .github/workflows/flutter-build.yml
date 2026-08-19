@@ -529,10 +529,10 @@ jobs:
             ./SignOutput/rustdesk-*.exe
 
   build-rustdesk-ios:
-    # This custom release is deployed to Windows endpoints only.
-    if: false
+    if: ${{ inputs.upload-artifact }}
     name: build rustdesk ios ipa
     runs-on: ${{ matrix.job.os }}
+    timeout-minutes: 120
     needs: [generate-bridge]
     strategy:
       fail-fast: false
@@ -631,32 +631,45 @@ jobs:
           # flutter build ipa --release --obfuscate --split-debug-info=./split-debug-info --no-codesign
           # for easy debugging
           flutter build ipa --release --no-codesign
+          APP_PATH="$(find build/ios/iphoneos -maxdepth 1 -type d -name '*.app' -print -quit)"
+          if [ -z "$APP_PATH" ]; then
+            APP_PATH="$(find build/ios/archive -type d -path '*/Products/Applications/*.app' -print -quit)"
+          fi
+          if [ -z "$APP_PATH" ]; then
+            echo "Built iOS app bundle was not found"
+            exit 1
+          fi
+          rm -rf build/ios/ipa/Payload
+          mkdir -p build/ios/ipa/Payload
+          cp -R "$APP_PATH" build/ios/ipa/Payload/
+          pushd build/ios/ipa
+          zip -qry "rustdesk-${{ env.VERSION }}-ios-unsigned.ipa" Payload
+          popd
 
-      # - name: Upload Artifacts
-      #   # if: env.ANDROID_SIGNING_KEY != null && env.UPLOAD_ARTIFACT == 'true'
-      #   uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-      #   with:
-      #     name: rustdesk-${{ env.VERSION }}-${{ matrix.job.arch }}.apk
-      #     path: flutter/build/ios/ipa/*.ipa
+      - name: Upload unsigned iOS IPA
+        if: env.UPLOAD_ARTIFACT == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: rustdesk-${{ env.VERSION }}-ios-unsigned.ipa
+          path: flutter/build/ios/ipa/rustdesk-${{ env.VERSION }}-ios-unsigned.ipa
 
-      # - name: Publish ipa package
-      #   # if: env.ANDROID_SIGNING_KEY != null && env.UPLOAD_ARTIFACT == 'true'
-      #   uses: softprops/action-gh-release@de2c0eb89ae2a093876385947365aca7b0e5f844 # v1
-      #   with:
-      #     prerelease: true
-      #     tag_name: ${{ env.TAG_NAME }}
-      #     files: |
-      #       flutter/build/ios/ipa/*.ipa
+      - name: Publish unsigned iOS IPA
+        if: env.UPLOAD_ARTIFACT == 'true'
+        uses: softprops/action-gh-release@de2c0eb89ae2a093876385947365aca7b0e5f844 # v1
+        with:
+          prerelease: true
+          tag_name: ${{ env.TAG_NAME }}
+          files: flutter/build/ios/ipa/rustdesk-${{ env.VERSION }}-ios-unsigned.ipa
 
 
   build-for-macOS:
-    # This custom release is deployed to Windows endpoints only.
-    if: false
     name: ${{ matrix.job.target }} (${{ matrix.edition }})
     runs-on: ${{ matrix.job.os }}
+    timeout-minutes: 180
     needs: [generate-bridge]
     strategy:
       fail-fast: false
+      max-parallel: 2
       matrix:
         edition: [field, admin]
         job:
@@ -824,6 +837,9 @@ jobs:
           rustc -V
 
       - name: Build rustdesk
+        id: build_macos
+        continue-on-error: true
+        timeout-minutes: 75
         run: |
           if [ "${{ matrix.job.target }}" = "aarch64-apple-darwin" ]; then
             MIN_MACOS_VERSION="12.3"
@@ -832,6 +848,13 @@ jobs:
             sed -i -e "s/osx_minimum_system_version = \"[0-9]*.[0-9]*\"/osx_minimum_system_version = \"${MIN_MACOS_VERSION}\"/" Cargo.toml
             sed -i -e "s/MACOSX_DEPLOYMENT_TARGET = [0-9]*.[0-9]*;/MACOSX_DEPLOYMENT_TARGET = ${MIN_MACOS_VERSION};/" flutter/macos/Runner.xcodeproj/project.pbxproj
           fi
+          ./build.py --flutter --hwcodec --unix-file-copy-paste ${{ matrix.job.extra-build-args }} ${{ matrix.edition == 'admin' && '--admin' || '' }}
+
+      - name: Retry build rustdesk
+        if: steps.build_macos.outcome == 'failure'
+        timeout-minutes: 75
+        run: |
+          echo "::warning::The first macOS build attempt failed or timed out; retrying once"
           ./build.py --flutter --hwcodec --unix-file-copy-paste ${{ matrix.job.extra-build-args }} ${{ matrix.edition == 'admin' && '--admin' || '' }}
 
       - name: create unsigned dmg
@@ -901,13 +924,13 @@ jobs:
           files: rustdesk-${{ env.VERSION }}-unsigned.tar.gz
 
   build-rustdesk-android:
-    # This custom release is deployed to Windows endpoints only.
-    if: false
     needs: [generate-bridge]
     name: build rustdesk android apk ${{ matrix.job.target }}
     runs-on: ${{ matrix.job.os }}
+    timeout-minutes: 180
     strategy:
       fail-fast: false
+      max-parallel: 2
       matrix:
         job:
           - {
@@ -952,8 +975,10 @@ jobs:
 
       - name: Install dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y \
+          dependencies_ok=false
+          for attempt in 1 2; do
+            if timeout --kill-after=1m 15m sudo apt-get update && \
+              timeout --kill-after=1m 45m sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y \
                clang \
                cmake \
                curl \
@@ -983,7 +1008,18 @@ jobs:
                openjdk-17-jdk-headless \
                pkg-config \
                tree \
-               wget
+               wget; then
+              dependencies_ok=true
+              break
+            fi
+
+            echo "::warning::Android system dependency installation failed or timed out on attempt ${attempt}/2"
+            timeout --kill-after=1m 10m sudo dpkg --configure -a || true
+          done
+
+          if [ "$dependencies_ok" != "true" ]; then
+            exit 1
+          fi
 
       - name: Checkout source code
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -1393,13 +1429,12 @@ jobs:
             signed-apk/rustdesk-${{ env.VERSION }}-universal${{ env.suffix }}.apk
 
   build-rustdesk-linux:
-    # This custom release is deployed to Windows endpoints only.
-    if: false
     needs: [generate-bridge]
     name: build rustdesk linux ${{ matrix.job.target }} (${{ matrix.edition }})
     runs-on: ${{ matrix.job.on }}
     strategy:
       fail-fast: false
+      max-parallel: 2
       matrix:
         edition: [field, admin]
         # use a high level qemu-user-static

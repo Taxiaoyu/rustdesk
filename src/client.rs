@@ -317,12 +317,12 @@ impl Client {
         // no need to care about multiple rendezvous servers case, since it is acutally not used any more.
         // Shared state for UDP NAT test result
         if crate::get_udp_punch_enabled() && !interface.is_force_relay() {
-            if let Ok((socket, addr)) = new_direct_udp_for(&rendezvous_server).await {
+            if let Ok((socket, _)) = new_direct_udp_for(&rendezvous_server).await {
                 let udp_port = Arc::new(Mutex::new(0));
                 let up_cloned = udp_port.clone();
                 let socket_cloned = socket.clone();
                 let func = async move {
-                    allow_err!(test_udp_uat(socket_cloned, addr, up_cloned, stop_udp_rx).await);
+                    allow_err!(test_udp_nat(socket_cloned, up_cloned, stop_udp_rx).await);
                 };
                 tokio::spawn(func);
                 (Some(socket), Some(udp_port))
@@ -433,13 +433,13 @@ impl Client {
                 .map_err(|e| anyhow!("Failed to secure tcp: {}", e))?;
         } else if let Some(udp) = udp.1.as_ref() {
             let tm = Instant::now();
+            let udp_wait = udp_nat_test_wait(rtt);
             loop {
                 let port = *udp.lock().unwrap();
                 if port > 0 {
                     break;
                 }
-                // await for 0.5 RTT
-                if tm.elapsed() > rtt / 2 {
+                if tm.elapsed() > udp_wait {
                     break;
                 }
                 hbb_common::sleep(0.001).await;
@@ -4203,106 +4203,62 @@ pub mod peer_online {
     }
 }
 
-async fn test_udp_uat(
+const MIN_UDP_NAT_TEST_WAIT: Duration = Duration::from_secs(2);
+const MAX_UDP_NAT_TEST_WAIT: Duration = Duration::from_secs(4);
+
+fn udp_nat_test_wait(rtt: Duration) -> Duration {
+    std::cmp::min(
+        std::cmp::max(rtt.saturating_mul(2), MIN_UDP_NAT_TEST_WAIT),
+        MAX_UDP_NAT_TEST_WAIT,
+    )
+}
+
+async fn test_udp_nat(
     udp_socket: Arc<UdpSocket>,
-    server_addr: SocketAddr,
     udp_port: Arc<Mutex<u16>>,
     mut stop_udp_rx: oneshot::Receiver<()>,
 ) -> ResultType<()> {
-    let (tx, mut rx) = oneshot::channel::<_>();
-    tokio::spawn(async {
-        if let Ok(v) = crate::test_nat_ipv4().await {
-            tx.send(v).ok();
-        }
-    });
-
     let start = Instant::now();
-    let mut msg_out = RendezvousMessage::new();
-    msg_out.set_test_nat_request(TestNatRequest {
-        ..Default::default()
-    });
-    // Adaptive retry strategy that works within TCP RTT constraints
-    // Start with aggressive sending, then back off
-    let mut retry_interval = Duration::from_millis(20); // Start fast
-    const MAX_INTERVAL: Duration = Duration::from_millis(200);
-    let mut packets_sent = 0;
-
-    // Send initial burst to improve reliability
-    let data = msg_out.write_to_bytes()?;
-    for _ in 0..2 {
-        if let Err(e) = udp_socket.send_to(&data, server_addr).await {
-            log::warn!("Failed to send initial UDP NAT test packet: {}", e);
-        } else {
-            packets_sent += 1;
+    tokio::select! {
+        res = crate::test_nat_ipv4_with_socket(udp_socket.as_ref()) => {
+            let (addr, server) = res?;
+            *udp_port.lock().unwrap() = addr.port();
+            log::debug!("UDP NAT test received response from {}: {}", addr, server);
         }
-    }
-    let mut last_send_time = Instant::now();
-    let mut buf = [0u8; 1500];
-
-    loop {
-        tokio::select! {
-            Ok((addr, server)) = &mut rx => {
-                *udp_port.lock().unwrap() = addr.port();
-                log::debug!("UDP NAT test received response from {}: {}", addr, server);
-                break;
-            }
-            _ = &mut stop_udp_rx => {
-                log::debug!("UDP NAT test received stop signal after {} packets", packets_sent);
-                break;
-            }
-            _ = hbb_common::sleep(retry_interval.as_secs_f32()) => {
-                // Adaptive retry: send fewer packets as time goes on
-                let elapsed = last_send_time.elapsed();
-
-                if elapsed >= retry_interval {
-                    // Send single packet (not double) to reduce network load
-                    if let Err(e) = udp_socket.send_to(&data, server_addr).await {
-                        log::warn!("Failed to send UDP NAT test retry packet: {}", e);
-                    } else {
-                        packets_sent += 1;
-                    }
-
-                    // Exponentially increase interval to reduce network pressure
-                    retry_interval = std::cmp::min(
-                        Duration::from_millis((retry_interval.as_millis() as f64 * 1.5) as u64),
-                        MAX_INTERVAL
-                    );
-                    last_send_time = Instant::now();
-                }
-            }
-            res = udp_socket.recv(&mut buf[..]) => {
-                match res {
-                    Ok(n) => {
-                        match RendezvousMessage::parse_from_bytes(&buf[0..n]) {
-                            Ok(msg_in) => {
-                                if let Some(rendezvous_message::Union::TestNatResponse(response)) = msg_in.union {
-                                    *udp_port.lock().unwrap() = response.port as u16;
-                                    break;
-                                }
-                            }
-                            Err(e) => {
-                                log::warn!("Failed to parse UDP NAT test response: {}", e);
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        log::warn!("UDP NAT test socket error: {}", e);
-                    }
-                }
-            }
+        _ = &mut stop_udp_rx => {
+            log::debug!("UDP NAT test received stop signal");
         }
     }
 
     let final_port = *udp_port.lock().unwrap();
     log::debug!(
-        "UDP NAT test to {:?} finished: time={:?}, port={}, packets_sent={}, success={}",
-        server_addr,
+        "UDP NAT test finished: time={:?}, port={}, success={}",
         start.elapsed(),
         final_port,
-        packets_sent,
         final_port > 0
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod udp_nat_test_wait_tests {
+    use super::*;
+
+    #[test]
+    fn udp_nat_test_wait_has_safe_bounds() {
+        assert_eq!(
+            udp_nat_test_wait(Duration::from_millis(50)),
+            MIN_UDP_NAT_TEST_WAIT
+        );
+        assert_eq!(
+            udp_nat_test_wait(Duration::from_millis(400)),
+            MIN_UDP_NAT_TEST_WAIT
+        );
+        assert_eq!(
+            udp_nat_test_wait(Duration::from_secs(3)),
+            MAX_UDP_NAT_TEST_WAIT
+        );
+    }
 }
 
 #[inline]

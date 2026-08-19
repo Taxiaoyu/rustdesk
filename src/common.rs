@@ -1105,11 +1105,14 @@ pub fn get_ipv6_punch_enabled() -> bool {
 
 pub fn get_local_option(key: &str) -> String {
     let v = LocalConfig::get_option(key);
-    if key == keys::OPTION_ENABLE_UDP_PUNCH || key == keys::OPTION_ENABLE_IPV6_PUNCH {
-        if v.is_empty() {
-            if !is_public(&Config::get_rendezvous_server()) {
-                return "N".to_owned();
-            }
+    if v.is_empty() {
+        if key == keys::OPTION_ENABLE_UDP_PUNCH {
+            return "Y".to_owned();
+        }
+        if key == keys::OPTION_ENABLE_IPV6_PUNCH
+            && !is_public(&Config::get_rendezvous_server())
+        {
+            return "N".to_owned();
         }
     }
     v
@@ -2341,11 +2344,12 @@ async fn stun_ipv6_test(stun_server: &str) -> ResultType<(SocketAddr, String)> {
     })
 }
 
-async fn stun_ipv4_test(stun_server: &str) -> ResultType<(SocketAddr, String)> {
+async fn stun_ipv4_test_with_socket(
+    stun_server: &str,
+    socket: &UdpSocket,
+) -> ResultType<(SocketAddr, String)> {
     use std::net::ToSocketAddrs;
     use stunclient::StunClient;
-    let local_addr = SocketAddr::from(([0u8; 4], 0));
-    let socket = UdpSocket::bind(&local_addr).await?;
     let Some(stun_addr) = stun_server
         .to_socket_addrs()?
         .filter(|x| x.is_ipv4())
@@ -2357,7 +2361,7 @@ async fn stun_ipv4_test(stun_server: &str) -> ResultType<(SocketAddr, String)> {
         );
     };
     let client = StunClient::new(stun_addr);
-    let addr = client.query_external_address_async(&socket).await?;
+    let addr = client.query_external_address_async(socket).await?;
     Ok(if addr.ip().is_ipv4() {
         (addr, stun_server.to_owned())
     } else {
@@ -2365,10 +2369,16 @@ async fn stun_ipv4_test(stun_server: &str) -> ResultType<(SocketAddr, String)> {
     })
 }
 
+async fn stun_ipv4_test(stun_server: &str) -> ResultType<(SocketAddr, String)> {
+    let local_addr = SocketAddr::from(([0u8; 4], 0));
+    let socket = UdpSocket::bind(&local_addr).await?;
+    stun_ipv4_test_with_socket(stun_server, &socket).await
+}
+
 static STUNS_V4: [&str; 3] = [
-    "stun.l.google.com:19302",
     "stun.cloudflare.com:3478",
     "stun.nextcloud.com:3478",
+    "stun.l.google.com:19302",
 ];
 
 static STUNS_V6: [&str; 3] = [
@@ -2395,6 +2405,21 @@ pub async fn test_nat_ipv4() -> ResultType<(SocketAddr, String)> {
             );
         }
     };
+}
+
+pub async fn test_nat_ipv4_with_socket(socket: &UdpSocket) -> ResultType<(SocketAddr, String)> {
+    let mut errors = Vec::new();
+    for stun in STUNS_V4 {
+        match timeout(600, stun_ipv4_test_with_socket(stun, socket)).await {
+            Ok(Ok(res)) => return Ok(res),
+            Ok(Err(e)) => errors.push(format!("{stun}: {e}")),
+            Err(e) => errors.push(format!("{stun}: {e}")),
+        }
+    }
+    bail!(
+        "Failed to get public IPv4 address for UDP punch socket: {}",
+        errors.join("; ")
+    )
 }
 
 async fn test_bind_ipv6() -> ResultType<SocketAddr> {
