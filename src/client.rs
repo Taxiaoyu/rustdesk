@@ -232,11 +232,18 @@ async fn add_tun_bypass_address(lease_id: &str, address: Ipv4Addr) -> bool {
         return false;
     }
     let owner_pid = std::process::id();
-    match crate::ipc::update_tun_bypass_route(lease_id, &address.to_string(), true).await {
+    let verify = || match crate::platform::windows::verify_tun_bypass_route(address) {
         Ok(()) => true,
+        Err(err) => {
+            log::warn!("Failed to verify TUN bypass route for {address}: {err}");
+            false
+        }
+    };
+    match crate::ipc::update_tun_bypass_route(lease_id, &address.to_string(), true).await {
+        Ok(()) => verify(),
         Err(ipc_err) if crate::platform::is_root() => {
             match crate::platform::windows::add_tun_bypass_route(lease_id, owner_pid, address) {
-                Ok(()) => true,
+                Ok(()) => verify(),
                 Err(route_err) => {
                     log::warn!(
                         "Failed to add TUN bypass route for {address}: ipc={ipc_err}, local={route_err}"

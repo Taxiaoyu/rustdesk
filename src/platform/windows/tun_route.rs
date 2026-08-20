@@ -102,6 +102,7 @@ fn find_physical_default_route() -> ResultType<MIB_IPFORWARDROW> {
             row.dwForwardDest == 0
                 && row.dwForwardMask == 0
                 && row.dwForwardNextHop != 0
+                && !is_benchmark_address(ipv4_from_windows(row.dwForwardNextHop))
                 && row.dwForwardIfIndex != 1
                 && row.ForwardType == MIB_IPROUTE_TYPE_INDIRECT
         })
@@ -116,6 +117,28 @@ pub(crate) fn is_clash_tun_active() -> bool {
                 && is_benchmark_address(ipv4_from_windows(route.dwForwardNextHop))
         })
     })
+}
+
+pub(crate) fn verify_tun_bypass_route(address: Ipv4Addr) -> ResultType<()> {
+    let destination = windows_ipv4(address);
+    let route = get_ipv4_routes()?
+        .into_iter()
+        .find(|route| {
+            route.dwForwardDest == destination
+                && route.dwForwardMask == u32::MAX
+                && route.dwForwardNextHop != 0
+                && !is_benchmark_address(ipv4_from_windows(route.dwForwardNextHop))
+                && route.dwForwardIfIndex != 1
+                && route.ForwardProto == PROTO_IP_NETMGMT
+                && route.dwForwardMetric1 == TUN_BYPASS_ROUTE_METRIC
+        })
+        .ok_or_else(|| anyhow!("No verified physical TUN bypass route for {address}"))?;
+    log::info!(
+        "Verified TUN bypass route: {address}/32 via {} (interface {})",
+        ipv4_from_windows(route.dwForwardNextHop),
+        route.dwForwardIfIndex
+    );
+    Ok(())
 }
 
 fn create_host_route(address: Ipv4Addr) -> ResultType<ManagedRoute> {

@@ -108,6 +108,7 @@ pub use acl::{
 pub(crate) use tun_route::{
     add_tun_bypass_route, cleanup_tun_bypass_routes, clear_tun_bypass_routes,
     is_clash_tun_active, remove_tun_bypass_routes, scrub_stale_tun_bypass_routes,
+    verify_tun_bypass_route,
 };
 
 pub const FLUTTER_RUNNER_WIN32_WINDOW_CLASS: &'static str = "FLUTTER_RUNNER_WIN32_WINDOW"; // main window, install window
