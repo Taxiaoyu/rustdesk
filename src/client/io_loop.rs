@@ -178,7 +178,10 @@ impl<T: InvokeUiSession> Remote<T> {
         )
         .await
         {
-            Ok(((mut peer, direct, pk, kcp, stream_type), (feedback, rendezvous_server))) => {
+            Ok((
+                (mut peer, direct, pk, kcp, stream_type, _route_lease),
+                (feedback, rendezvous_server),
+            )) => {
                 self.handler
                     .connection_round_state
                     .lock()

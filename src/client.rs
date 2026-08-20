@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
     ffi::c_void,
-    net::SocketAddr,
+    net::{Ipv4Addr, SocketAddr},
     ops::Deref,
     str::FromStr,
     sync::{
@@ -150,6 +150,129 @@ pub(crate) struct ClientClipboardContext {
 /// Client of the remote desktop.
 pub struct Client;
 
+pub struct TunBypassRouteLease {
+    lease_id: String,
+    #[cfg(windows)]
+    cleanup: Option<oneshot::Sender<()>>,
+}
+
+impl TunBypassRouteLease {
+    fn new() -> Self {
+        #[cfg(windows)]
+        {
+            let lease_id = Uuid::new_v4().to_string();
+            let cleanup_id = lease_id.clone();
+            let owner_pid = std::process::id();
+            let (tx, rx) = oneshot::channel();
+            tokio::spawn(async move {
+                let _ = rx.await;
+                if let Err(err) = crate::ipc::update_tun_bypass_route(&cleanup_id, "", false).await
+                {
+                    log::warn!("Failed to release TUN bypass routes: {err}");
+                }
+                if crate::platform::is_root() {
+                    if let Err(err) = crate::platform::windows::remove_tun_bypass_routes(
+                        &cleanup_id,
+                        owner_pid,
+                    ) {
+                        log::warn!("Failed to release local TUN bypass routes: {err}");
+                    }
+                }
+            });
+            return Self {
+                lease_id,
+                cleanup: Some(tx),
+            };
+        }
+        #[cfg(not(windows))]
+        Self {
+            lease_id: String::new(),
+        }
+    }
+
+    fn id(&self) -> &str {
+        &self.lease_id
+    }
+}
+
+impl Drop for TunBypassRouteLease {
+    fn drop(&mut self) {
+        #[cfg(windows)]
+        if let Some(tx) = self.cleanup.take() {
+            let _ = tx.send(());
+        }
+    }
+}
+
+#[cfg(windows)]
+fn is_public_tun_bypass_address(address: Ipv4Addr) -> bool {
+    let [a, b, _, _] = address.octets();
+    !address.is_private()
+        && !address.is_loopback()
+        && !address.is_link_local()
+        && !address.is_unspecified()
+        && !address.is_broadcast()
+        && !address.is_multicast()
+        && !(a == 100 && (64..=127).contains(&b))
+        && !(a == 198 && (18..=19).contains(&b))
+        && !(a == 192 && b == 0)
+}
+
+#[cfg(windows)]
+async fn add_tun_bypass_address(lease_id: &str, address: Ipv4Addr) -> bool {
+    if !crate::platform::windows::is_clash_tun_active() {
+        return false;
+    }
+    if !is_public_tun_bypass_address(address) {
+        if address.octets()[0] == 198 && (18..=19).contains(&address.octets()[1]) {
+            log::warn!(
+                "Skipped Clash fake IP {address}; add rd.chuan-chuan.com to dns.fake-ip-filter"
+            );
+        }
+        return false;
+    }
+    let owner_pid = std::process::id();
+    match crate::ipc::update_tun_bypass_route(lease_id, &address.to_string(), true).await {
+        Ok(()) => true,
+        Err(ipc_err) if crate::platform::is_root() => {
+            match crate::platform::windows::add_tun_bypass_route(lease_id, owner_pid, address) {
+                Ok(()) => true,
+                Err(route_err) => {
+                    log::warn!(
+                        "Failed to add TUN bypass route for {address}: ipc={ipc_err}, local={route_err}"
+                    );
+                    false
+                }
+            }
+        }
+        Err(err) => {
+            log::warn!(
+                "Failed to add TUN bypass route for {address}: {err}; ensure the RustDesk service is running"
+            );
+            false
+        }
+    }
+}
+
+#[cfg(windows)]
+async fn add_tun_bypass_endpoint(lease_id: &str, endpoint: &str) {
+    let addresses = match tokio::net::lookup_host(endpoint).await {
+        Ok(addresses) => addresses,
+        Err(err) => {
+            log::warn!("Failed to resolve TUN bypass endpoint {endpoint}: {err}");
+            return;
+        }
+    };
+    let mut seen = std::collections::HashSet::new();
+    for address in addresses {
+        if let SocketAddr::V4(address) = address {
+            if seen.insert(*address.ip()) {
+                add_tun_bypass_address(lease_id, *address.ip()).await;
+            }
+        }
+    }
+}
+
 #[cfg(not(target_os = "ios"))]
 struct ClipboardState {
     #[cfg(feature = "flutter")]
@@ -203,13 +326,24 @@ impl Client {
             Option<Vec<u8>>,
             Option<KcpStream>,
             &'static str,
+            TunBypassRouteLease,
         ),
         (i32, String),
     )> {
         debug_assert!(peer == interface.get_id());
         interface.update_direct(None);
         interface.update_received(false);
-        match Self::_start(peer, key, token, conn_type, interface.clone()).await {
+        let route_lease = TunBypassRouteLease::new();
+        match Self::_start(
+            peer,
+            key,
+            token,
+            conn_type,
+            interface.clone(),
+            route_lease.id(),
+        )
+        .await
+        {
             Err(err) => {
                 let err_str = err.to_string();
                 if err_str.starts_with("Failed") {
@@ -229,7 +363,8 @@ impl Client {
                         interface.get_lch().write().unwrap().set_direct_failure(n);
                     }
                 }
-                Ok((x.0, x.1))
+                let ((stream, direct, pk, kcp, typ), feedback) = (x.0, x.1);
+                Ok(((stream, direct, pk, kcp, typ, route_lease), feedback))
             }
         }
     }
@@ -241,6 +376,7 @@ impl Client {
         token: &str,
         conn_type: ConnType,
         interface: impl Interface,
+        route_lease_id: &str,
     ) -> ResultType<(
         (
             Stream,
@@ -257,6 +393,8 @@ impl Client {
         }
         // to-do: remember the port for each peer, so that we can retry easier
         if hbb_common::is_ip_str(peer) {
+            #[cfg(windows)]
+            add_tun_bypass_endpoint(route_lease_id, &check_port(peer, RELAY_PORT + 1)).await;
             return Ok((
                 (
                     connect_tcp_local(check_port(peer, RELAY_PORT + 1), None, CONNECT_TIMEOUT)
@@ -272,6 +410,8 @@ impl Client {
         }
         // Allow connect to {domain}:{port}
         if hbb_common::is_domain_port_str(peer) {
+            #[cfg(windows)]
+            add_tun_bypass_endpoint(route_lease_id, peer).await;
             return Ok((
                 (
                     connect_tcp_local(peer, None, CONNECT_TIMEOUT).await?,
@@ -308,6 +448,13 @@ impl Client {
             }
         };
 
+        #[cfg(windows)]
+        add_tun_bypass_endpoint(route_lease_id, &rendezvous_server).await;
+        #[cfg(windows)]
+        for server in &servers {
+            add_tun_bypass_endpoint(route_lease_id, &check_port(server, RENDEZVOUS_PORT)).await;
+        }
+
         if crate::get_ipv6_punch_enabled() {
             crate::test_ipv6().await;
         }
@@ -343,6 +490,7 @@ impl Client {
             rendezvous_server.clone(),
             servers.clone(),
             contained,
+            route_lease_id.to_owned(),
         );
         if udp.0.is_none() {
             return fut.await;
@@ -360,6 +508,7 @@ impl Client {
             rendezvous_server,
             servers,
             contained,
+            route_lease_id.to_owned(),
         );
         connect_futures.push(fut.boxed());
         match select_ok(connect_futures).await {
@@ -379,6 +528,7 @@ impl Client {
         mut rendezvous_server: String,
         servers: Vec<String>,
         contained: bool,
+        route_lease_id: String,
     ) -> ResultType<(
         (
             Stream,
@@ -624,6 +774,7 @@ impl Client {
                 udp.0,
                 ipv6.0,
                 punch_type,
+                &route_lease_id,
             )
             .await?,
             (feedback, rendezvous_server),
@@ -650,6 +801,7 @@ impl Client {
         udp_socket_nat: Option<Arc<UdpSocket>>,
         udp_socket_v6: Option<Arc<UdpSocket>>,
         punch_type: &str,
+        route_lease_id: &str,
     ) -> ResultType<(
         Stream,
         bool,
@@ -690,6 +842,10 @@ impl Client {
             }
         }
         log::info!("peer address: {}, timeout: {}", peer, connect_timeout);
+        #[cfg(windows)]
+        if let SocketAddr::V4(peer) = peer {
+            add_tun_bypass_address(route_lease_id, *peer.ip()).await;
+        }
         let start = std::time::Instant::now();
 
         let mut connect_futures = Vec::new();

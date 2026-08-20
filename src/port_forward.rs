@@ -122,8 +122,10 @@ async fn connect_and_login(
     } else {
         ConnType::PORT_FORWARD
     };
-    let ((mut stream, direct, _pk, _kcp, _stream_type), (feedback, rendezvous_server)) =
-        Client::start(id, key, token, conn_type, interface.clone()).await?;
+    let (
+        (mut stream, direct, _pk, _kcp, _stream_type, _route_lease),
+        (feedback, rendezvous_server),
+    ) = Client::start(id, key, token, conn_type, interface.clone()).await?;
     interface.update_direct(Some(direct));
     if !stream.is_secured() && !crate::common::is_direct_ip_access(id) {
         if !confirm_insecure_connection(&interface, ui_receiver).await {

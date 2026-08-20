@@ -98,11 +98,16 @@ use windows_service::{
 use winreg::{enums::*, RegKey};
 
 mod acl;
+mod tun_route;
 pub(crate) use acl::current_process_user_sid_string;
 pub use acl::{
     set_path_permission, set_path_permission_for_portable_service_shmem_dir,
     set_path_permission_for_portable_service_shmem_file,
     validate_path_for_portable_service_shmem_dir,
+};
+pub(crate) use tun_route::{
+    add_tun_bypass_route, cleanup_tun_bypass_routes, clear_tun_bypass_routes,
+    is_clash_tun_active, remove_tun_bypass_routes, scrub_stale_tun_bypass_routes,
 };
 
 pub const FLUTTER_RUNNER_WIN32_WINDOW_CLASS: &'static str = "FLUTTER_RUNNER_WIN32_WINDOW"; // main window, install window
@@ -604,7 +609,7 @@ fn resolve_expected_active_session_id_for_service(session_id: u32) -> Option<u32
 fn authorize_service_scoped_ipc_connection(
     stream: &ipc::Connection,
     expected_active_session_id: Option<u32>,
-) -> bool {
+) -> Option<u32> {
     let (authorized, peer_pid, peer_session_id, peer_is_system) =
         stream.service_authorization_status_for_session(expected_active_session_id);
     if !authorized {
@@ -616,7 +621,7 @@ fn authorize_service_scoped_ipc_connection(
             peer_is_system,
             None,
         );
-        return false;
+        return None;
     }
     if let Err(err) =
         ipc::ensure_peer_executable_matches_current_by_pid_opt(peer_pid, crate::POSTFIX_SERVICE)
@@ -627,9 +632,9 @@ fn authorize_service_scoped_ipc_connection(
                 peer_pid,
                 err
             );
-        return false;
+        return None;
     }
-    true
+    peer_pid
 }
 
 extern "system" {
@@ -671,12 +676,14 @@ async fn run_service(_arguments: Vec<OsString>) -> ResultType<()> {
 
     // Tell the system that the service is running now
     status_handle.set_service_status(next_status)?;
+    scrub_stale_tun_bypass_routes();
 
     let mut session_id = unsafe { get_current_session(share_rdp()) };
     log::info!("session id {}", session_id);
     let mut h_process = launch_server(session_id, true).await.unwrap_or(NULL);
     let mut incoming = ipc::new_listener(crate::POSTFIX_SERVICE).await?;
     let mut stored_usid = None;
+    let mut last_tun_route_cleanup = Instant::now();
     loop {
         let sids: Vec<_> = get_available_sessions(false)
             .iter()
@@ -703,10 +710,11 @@ async fn run_service(_arguments: Vec<OsString>) -> ResultType<()> {
                     // session_id after awaiting incoming.next().
                     let expected_active_session_id =
                         resolve_expected_active_session_id_for_service(session_id);
-                    if !authorize_service_scoped_ipc_connection(&stream, expected_active_session_id)
-                    {
+                    let Some(authorized_peer_pid) =
+                        authorize_service_scoped_ipc_connection(&stream, expected_active_session_id)
+                    else {
                         continue;
-                    }
+                    };
                     if let Ok(Some(data)) = stream.next_timeout(1000).await {
                         match data {
                             ipc::Data::Close => {
@@ -730,6 +738,39 @@ async fn run_service(_arguments: Vec<OsString>) -> ResultType<()> {
                                             launch_server(session_id, true).await.unwrap_or(NULL);
                                     }
                                 }
+                            }
+                            ipc::Data::TunBypassRoute {
+                                lease_id,
+                                address,
+                                add,
+                                result: None,
+                            } => {
+                                let result = if add {
+                                    address
+                                        .parse::<std::net::Ipv4Addr>()
+                                        .map_err(|err| anyhow!("Invalid IPv4 address: {err}"))
+                                        .and_then(|address| {
+                                            add_tun_bypass_route(
+                                                &lease_id,
+                                                authorized_peer_pid,
+                                                address,
+                                            )
+                                        })
+                                } else {
+                                    remove_tun_bypass_routes(&lease_id, authorized_peer_pid)
+                                };
+                                let result =
+                                    result.err().map(|err| err.to_string()).unwrap_or_default();
+                                allow_err!(
+                                    stream
+                                        .send(&ipc::Data::TunBypassRoute {
+                                            lease_id,
+                                            address,
+                                            add,
+                                            result: Some(result),
+                                        })
+                                        .await
+                                );
                             }
                             _ => {}
                         }
@@ -772,12 +813,17 @@ async fn run_service(_arguments: Vec<OsString>) -> ResultType<()> {
                 }
             }
         }
+        if last_tun_route_cleanup.elapsed() >= Duration::from_secs(30) {
+            cleanup_tun_bypass_routes();
+            last_tun_route_cleanup = Instant::now();
+        }
     }
 
     if !h_process.is_null() {
         send_close_async("").await.ok();
         unsafe { CloseHandle(h_process) };
     }
+    clear_tun_bypass_routes();
 
     status_handle.set_service_status(ServiceStatus {
         service_type: SERVICE_TYPE,

@@ -119,6 +119,34 @@ pub async fn connect_service(ms_timeout: u64) -> ResultType<ConnectionTmpl<ConnC
     connect(ms_timeout, crate::POSTFIX_SERVICE).await
 }
 
+#[cfg(windows)]
+pub async fn update_tun_bypass_route(
+    lease_id: &str,
+    address: &str,
+    add: bool,
+) -> ResultType<()> {
+    let mut stream = connect_service(1_000).await?;
+    stream
+        .send(&Data::TunBypassRoute {
+            lease_id: lease_id.to_owned(),
+            address: address.to_owned(),
+            add,
+            result: None,
+        })
+        .await?;
+    match stream.next_timeout(1_000).await? {
+        Some(Data::TunBypassRoute {
+            result: Some(result),
+            ..
+        }) if result.is_empty() => Ok(()),
+        Some(Data::TunBypassRoute {
+            result: Some(result),
+            ..
+        }) => bail!(result),
+        _ => bail!("Invalid TUN bypass route response"),
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(tag = "t", content = "c")]
 pub enum FS {
@@ -331,6 +359,13 @@ pub enum Data {
     Close,
     #[cfg(windows)]
     SAS,
+    #[cfg(windows)]
+    TunBypassRoute {
+        lease_id: String,
+        address: String,
+        add: bool,
+        result: Option<String>,
+    },
     UserSid(Option<u32>),
     OnlineStatus(Option<(i64, bool)>),
     Config((String, Option<String>)),

@@ -115,6 +115,7 @@ winapi = { version = "0.3", features = [
     "cguid",
     "cfgmgr32",
     "ioapiset",
+    "iphlpapi",
     "winspool",
 ] }
 windows = { version = "0.61", features = [
