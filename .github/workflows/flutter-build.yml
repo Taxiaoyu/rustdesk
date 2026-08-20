@@ -631,8 +631,11 @@ jobs:
           # flutter build ipa --release --obfuscate --split-debug-info=./split-debug-info --no-codesign
           # for easy debugging
           flutter build ipa --release --no-codesign
-          APP_PATH="$(find build/ios/iphoneos -maxdepth 1 -type d -name '*.app' -print -quit)"
-          if [ -z "$APP_PATH" ]; then
+          APP_PATH=""
+          if [ -d build/ios/iphoneos ]; then
+            APP_PATH="$(find build/ios/iphoneos -maxdepth 1 -type d -name '*.app' -print -quit)"
+          fi
+          if [ -z "$APP_PATH" ] && [ -d build/ios/archive ]; then
             APP_PATH="$(find build/ios/archive -type d -path '*/Products/Applications/*.app' -print -quit)"
           fi
           if [ -z "$APP_PATH" ]; then
@@ -975,9 +978,19 @@ jobs:
 
       - name: Install dependencies
         run: |
+          for source_file in /etc/apt/sources.list /etc/apt/sources.list.d/ubuntu.sources /etc/apt/apt-mirrors.txt; do
+            if [ -f "$source_file" ]; then
+              sudo sed -i 's|http://azure.archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' "$source_file"
+            fi
+          done
+
           dependencies_ok=false
           for attempt in 1 2; do
-            if timeout --kill-after=1m 15m sudo apt-get update && \
+            if timeout --kill-after=1m 15m sudo apt-get \
+              -o Acquire::Retries=5 \
+              -o Acquire::http::Timeout=30 \
+              -o Acquire::https::Timeout=30 \
+              update && \
               timeout --kill-after=1m 45m sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y \
                clang \
                cmake \
@@ -1274,7 +1287,16 @@ jobs:
 
       - name: Install dependencies
         run: |
-          sudo apt-get update
+          for source_file in /etc/apt/sources.list /etc/apt/sources.list.d/ubuntu.sources /etc/apt/apt-mirrors.txt; do
+            if [ -f "$source_file" ]; then
+              sudo sed -i 's|http://azure.archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' "$source_file"
+            fi
+          done
+          sudo apt-get \
+            -o Acquire::Retries=5 \
+            -o Acquire::http::Timeout=30 \
+            -o Acquire::https::Timeout=30 \
+            update
           sudo apt-get install -y \
                clang \
                cmake \
@@ -1468,7 +1490,16 @@ jobs:
           sudo rm -rf /opt/ghc
           sudo rm -rf /usr/local/lib/android
           sudo rm -rf /usr/share/dotnet
-          sudo apt-get update -y
+          for source_file in /etc/apt/sources.list /etc/apt/sources.list.d/ubuntu.sources /etc/apt/apt-mirrors.txt; do
+            if [ -f "$source_file" ]; then
+              sudo sed -i 's|http://azure.archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' "$source_file"
+            fi
+          done
+          timeout --kill-after=1m 15m sudo apt-get \
+            -o Acquire::Retries=5 \
+            -o Acquire::http::Timeout=30 \
+            -o Acquire::https::Timeout=30 \
+            update -y
           sudo apt-get install -y nasm
           if [[ "${{ matrix.job.arch }}" == "x86_64" ]]; then
             sudo apt-get install -y qemu-user-static
